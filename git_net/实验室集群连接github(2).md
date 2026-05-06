@@ -736,3 +736,483 @@ Web GPT 读取 GitHub 中的报告并评审
 确认远程测试文件不要时，可以强制覆盖远程
 误 pull/rebase 时优先用 reflog 找回
 ```
+
+---
+
+## 20. 补充：多个 Horange116 仓库如何复用同一个 token
+
+后续又处理了两个仓库：
+
+```text
+Horange116/AI_driven_proj_Manage
+Horange116/Echo_Project
+```
+
+重要结论：
+
+```text
+不要把 Horange116 token 配成全局凭据。
+只给需要 push 到 Horange116 的具体仓库设置 local credential。
+```
+
+原因是 `~/s2025244265` 下面不只包含自己的仓库，还包含很多第三方仓库，例如：
+
+```text
+opendatalab/MinerU
+NousResearch/hermes-agent
+QwenLM/Qwen2-VL
+huggingface 模型仓库
+chenhg5/cc-connect
+```
+
+如果全局覆盖 GitHub 凭据，可能导致第三方仓库 fetch/push 身份混乱。
+
+推荐做法是按仓库配置：
+
+```bash
+cd ~/s2025244265/Projects/Echo_Project
+
+git config --local user.name "Horange116"
+git config --local user.email "1309379765@qq.com"
+
+git config --local --unset-all credential.helper 2>/dev/null || true
+git config --local --add credential.helper ""
+git config --local --add credential.helper "store --file ~/.git-credentials-Horange116"
+git config --local credential.useHttpPath true
+```
+
+其中：
+
+```text
+credential.helper = "" 
+```
+
+这一行用于屏蔽全局 credential helper，避免继续使用默认的 `~/.git-credentials` 中其他人的账号。
+
+---
+
+## 21. 补充：`credential.useHttpPath=true` 为什么重要
+
+如果只按 `github.com` 存凭据，Git 可能把同一个 GitHub 凭据用于所有 GitHub 仓库。
+
+开启：
+
+```bash
+git config --local credential.useHttpPath true
+```
+
+后，Git 会按完整路径区分凭据，例如：
+
+```text
+github.com/Horange116/AI_driven_proj_Manage.git
+github.com/Horange116/Echo_Project.git
+```
+
+这样同一个凭据文件中可以保存多条记录：
+
+```text
+~/.git-credentials-Horange116
+```
+
+示意格式如下，不要把真实 token 写进文档：
+
+```text
+https://Horange116:<TOKEN>@github.com/Horange116/AI_driven_proj_Manage.git
+https://Horange116:<TOKEN>@github.com/Horange116/Echo_Project.git
+```
+
+检查当前仓库实际会使用哪个凭据：
+
+```bash
+printf 'protocol=https\nhost=github.com\npath=Horange116/Echo_Project.git\n\n' \
+  | git credential fill
+```
+
+输出里应该看到：
+
+```text
+username=Horange116
+```
+
+真实 `password` / token 不要打印到聊天、日志或文档里。
+
+---
+
+## 22. 补充：GitHub 大文件限制与本地保留策略
+
+GitHub 普通 Git 仓库有两个关键限制：
+
+```text
+单文件超过 50 MB：GitHub 会警告
+单文件超过 100 MB：GitHub 会拒绝 push
+```
+
+在 `AI_driven_proj_Manage` 中，push 曾被这些压缩包拒绝：
+
+```text
+data_Processed/DHF -梳理版_预处理_hybrid-auto处理.zip
+data_Processed/DHF_梳理版_预处理.zip
+data_Processed/DHF_梳理版_预处理_mineru处理.zip
+data_Processed/DHF_梳理版_预处理_mineru处理&部分pdf用VLM处理.zip
+data_Processed/DMR-全-20260421_预处理_hybrid-auto处理.zip
+data_Processed/DMR_全_20260421_预处理.zip
+data_Processed/DMR_全_20260421_预处理_mineru处理.zip
+```
+
+用户要求是：
+
+```text
+本地文件不要删除，只是上传时不要上传。
+```
+
+对应做法是：
+
+```bash
+git rm --cached -- "path/to/large_file.zip"
+```
+
+注意：
+
+```text
+git rm --cached 只从 Git 索引中移除文件。
+本地磁盘上的文件仍然保留。
+```
+
+然后在 `.gitignore` 中加入规则：
+
+```gitignore
+data_Processed/*.zip
+data_Processed/**/*.zip
+```
+
+验证本地文件是否仍保留：
+
+```bash
+ls -lh data_Processed/*.zip
+```
+
+验证是否已经被 Git 忽略：
+
+```bash
+git status --short --ignored
+git check-ignore -v data_Processed/*.zip
+```
+
+---
+
+## 23. 补充：为什么只 `git rm --cached` 还不够
+
+如果大文件已经进入过 commit 历史，即使当前工作区已经不再跟踪，GitHub 仍然可能拒绝 push。
+
+原因是：
+
+```text
+push 上传的是一段提交历史，不只是当前文件夹快照。
+历史 commit 里的大 blob 也会被 GitHub 检查。
+```
+
+检查当前分支历史中是否还有超过 50 MB 的 blob：
+
+```bash
+git rev-list --objects main \
+  | git cat-file --batch-check='%(objecttype) %(objectname) %(objectsize) %(rest)' \
+  | awk '$1=="blob" && $3 > 50*1024*1024 {
+      printf "%.2f MB\t%s\t%s\n", $3/1024/1024, $2, substr($0, index($0,$4))
+    }' \
+  | sort -nr
+```
+
+如果有大文件历史，需要清理历史。
+
+本次使用过的方式是 `git filter-branch`：
+
+```bash
+FILTER_BRANCH_SQUELCH_WARNING=1 \
+git filter-branch --force \
+  --index-filter "git rm -r --cached --ignore-unmatch -- 'data_Processed/*.zip'" \
+  --prune-empty \
+  --tag-name-filter cat \
+  -- --all
+```
+
+清理 `filter-branch` 自动备份和 reflog：
+
+```bash
+git update-ref -d refs/original/refs/heads/main 2>/dev/null || true
+git reflog expire --expire=now --all
+git gc --prune=now --aggressive
+```
+
+再次验证：
+
+```bash
+git rev-list --objects main \
+  | git cat-file --batch-check='%(objecttype) %(objectname) %(objectsize) %(rest)' \
+  | awk '$1=="blob" && $3 > 50*1024*1024 {print}'
+```
+
+没有输出，才说明当前 `main` 历史中已经没有超过 50 MB 的 blob。
+
+---
+
+## 24. 补充：遇到坏掉的 rebase 残留
+
+本次遇到过：
+
+```text
+rebase in progress
+error: could not read '.git/rebase-apply/head-name': No such file or directory
+```
+
+这说明 Git 认为正在 rebase，但 `.git/rebase-apply` 元数据已经不完整。
+
+常规命令：
+
+```bash
+git rebase --continue
+git rebase --abort
+```
+
+都可能失败。
+
+处理前先确认：
+
+```bash
+git status
+git log --oneline --decorate -5
+find .git/rebase-apply -maxdepth 1 -type f -printf '%f\t%s\n' | sort | head
+```
+
+如果确认只是坏掉的临时 rebase/apply 目录，且当前 `main` 指向正确提交，可以清理残留：
+
+```bash
+rm -rf .git/rebase-apply
+git checkout main
+```
+
+本次还发现 `.git/rebased-patches` 残留接近 3 GB。该文件是 Git 临时补丁残留，不是工作区项目文件，可以删除释放空间：
+
+```bash
+rm -f .git/rebased-patches
+```
+
+清理后用：
+
+```bash
+git status --short
+du -sh .git
+```
+
+确认仓库状态和 `.git` 目录大小。
+
+---
+
+## 25. 补充：Echo_Project 的上传策略
+
+`Echo_Project` 中本地数据非常大，例如：
+
+```text
+mnt/        约 140G
+output/     约 107G
+dataJson/   约 17G
+EchoMind/   数百 MB，且本身是嵌套 Git 仓库
+```
+
+因此不能直接：
+
+```bash
+git add .
+```
+
+否则可能把数据集、训练 checkpoint、生成 jsonl、日志等全部加入 Git。
+
+本次采用策略：
+
+```text
+保留本地文件
+只上传代码、脚本、说明文档
+忽略大数据、训练输出、checkpoint、日志
+```
+
+`.gitignore` 核心规则示例：
+
+```gitignore
+dataJson/
+mnt/
+EchoMind/
+output/GeneratedData/
+output/dataPreparedRes/
+output/testResult/
+
+*.zip
+*.parquet
+*.pt
+*.pth
+*.safetensors
+*.jsonl
+
+*.out
+*.err
+*.log
+slurm-*.out
+nccl_debug.log
+```
+
+检查 staged 文件中是否存在超过 50 MB 的文件：
+
+```bash
+git diff --cached --name-only \
+  | while IFS= read -r f; do
+      [ -f "$f" ] || continue
+      size=$(stat -c%s "$f")
+      if [ "$size" -gt $((50*1024*1024)) ]; then
+        printf '%.2f MB\t%s\n' "$(awk -v s="$size" 'BEGIN{print s/1024/1024}')" "$f"
+      fi
+    done
+```
+
+检查 tracked 文件中是否存在超过 50 MB 的文件：
+
+```bash
+git ls-files \
+  | while IFS= read -r f; do
+      [ -f "$f" ] || continue
+      size=$(stat -c%s "$f")
+      if [ "$size" -gt $((50*1024*1024)) ]; then
+        printf '%.2f MB\t%s\n' "$(awk -v s="$size" 'BEGIN{print s/1024/1024}')" "$f"
+      fi
+    done
+```
+
+检查历史中是否有超过 50 MB 的 blob：
+
+```bash
+git rev-list --objects main \
+  | git cat-file --batch-check='%(objecttype) %(objectname) %(objectsize) %(rest)' \
+  | awk '$1=="blob" && $3 > 50*1024*1024 {print}'
+```
+
+---
+
+## 26. 补充：origin / upstream 的分工
+
+当本地项目来自别人的仓库，但需要推到自己的仓库时，推荐保留两个 remote：
+
+```text
+origin   = 自己要 push 的仓库
+upstream = 原始来源仓库
+```
+
+例如 `Echo_Project`：
+
+```bash
+git remote rename origin upstream
+git remote add origin https://github.com/Horange116/Echo_Project.git
+```
+
+检查：
+
+```bash
+git remote -v
+```
+
+期望类似：
+
+```text
+origin    https://github.com/Horange116/Echo_Project.git
+upstream  https://github.com/wdqqdw/Echo
+```
+
+这样：
+
+```bash
+git push origin main
+```
+
+表示推到自己的仓库。
+
+```bash
+git fetch upstream
+```
+
+表示从原始项目同步更新。
+
+---
+
+## 27. 补充：push 前先 dry-run
+
+在不确定大文件、权限或远程覆盖风险时，先 dry-run：
+
+```bash
+git push --dry-run -u origin main --force-with-lease
+```
+
+如果看到：
+
+```text
+Would set upstream of 'main' to 'main' of 'origin'
+```
+
+或者：
+
+```text
+* [new branch] main -> main
+```
+
+说明 dry-run 通过，没有实际上传。
+
+如果报：
+
+```text
+remote: Permission to Horange116/Echo_Project.git denied to wangtianrui.
+```
+
+说明当前仍然用了错误账号，需要检查：
+
+```bash
+git config --local --get-all credential.helper
+git config --local --get credential.useHttpPath
+printf 'protocol=https\nhost=github.com\npath=Horange116/Echo_Project.git\n\n' | git credential fill
+```
+
+如果报 GitHub 大文件错误，则先回到第 22、23 节处理。
+
+---
+
+## 28. 补充：clone 仓库前先确认仓库名
+
+本次用户说的是：
+
+```text
+kownledgeForce
+```
+
+实际 GitHub 可访问仓库名是：
+
+```text
+Horange116/knowledgeForce
+```
+
+clone 前可以先检查：
+
+```bash
+git ls-remote https://github.com/Horange116/kownledgeForce.git HEAD
+git ls-remote https://github.com/Horange116/knowledgeForce.git HEAD
+```
+
+哪个有输出，说明哪个仓库存在。
+
+clone 到 `~/s2025244265`：
+
+```bash
+cd ~/s2025244265
+git clone https://github.com/Horange116/knowledgeForce.git knowledgeForce
+```
+
+检查：
+
+```bash
+cd knowledgeForce
+git status --short --branch
+git remote -v
+```
