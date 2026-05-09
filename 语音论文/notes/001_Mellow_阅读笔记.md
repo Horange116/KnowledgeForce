@@ -184,3 +184,84 @@ Echo 强调 audio-interleaved reasoning，而 Mellow 更偏“构造音频推理
 ## 8. 一句话总结
 
 Mellow 的核心不是“做了一个很小的音频模型”，而是证明了：通过专门构造音频推理数据和合理训练策略，小型 Audio-Language Model 也能获得可观的音频推理能力。
+
+## 9. 本次详细阅读后的收获
+
+### 9.1 这篇文章最值得吸收的是数据路线，而不是模型结构本身
+
+Mellow 的模型结构本质上仍是较常见的 `audio encoder + mapper + small language model`。真正有迁移价值的是 ReasonAQA：它把普通音频 caption 数据改造成了可以训练和评估推理能力的 QA 数据。
+
+因此，这篇文章对项目的最大启发是：不要只把音频数据看作“音频-描述”配对，而要把它加工成“音频-问题-答案-推理类型”的结构化样本。
+
+### 9.2 ReasonAQA 的核心思想是把 caption supervision 升级为 reasoning supervision
+
+普通 audio caption 数据只能训练模型描述“听到了什么”。ReasonAQA 进一步要求模型回答：
+
+- 声音事件是什么；
+- 声源可能是什么；
+- 声学属性是什么；
+- 场景或语义上可以推断出什么；
+- 文本假设是否被音频证据支持；
+- 两段音频之间有什么差异。
+
+这使训练目标从 `audio -> caption` 变成了 `audio + question -> answer`，并且问题本身覆盖了多种推理类型。
+
+### 9.3 数据构造可以拆成一条可复用 pipeline
+
+可迁移到项目中的流程是：
+
+```text
+原始音频 / caption / transcript
+→ LLM 生成音频相关问题
+→ 区分 detailed QA 和 MCQ QA
+→ 加入 entailment / comparison 等推理任务
+→ 统一成可训练、可评估的 JSON 格式
+→ 按 reasoning_type 分类别评估模型能力
+```
+
+其中 detailed QA 用来训练开放式解释和生成能力，MCQ QA 用来训练明确判断和自动评估能力，entailment 用来训练证据边界意识，comparison 用来训练双音频比较推理。
+
+### 9.4 训练确实提升了部分推理能力，但不是全面增强
+
+从结果看，Mellow 的训练方法确实强化了 sound/music、audio entailment、audio difference 等目标任务上的能力。这说明 ReasonAQA 不是只让模型学会表面格式，而是对部分音频推理能力有实质提升。
+
+但这种提升是选择性的。Mellow 在 speech 相关任务上仍然较弱，说明训练数据覆盖不到的能力不会自动增强。Entailment 中 Neutral 类型也相对困难，说明模型更容易学会“明确支持 / 明确矛盾”，但更难学会“证据不足”。
+
+### 9.5 对后续项目最重要的警惕：构造什么数据，就主要强化什么能力
+
+ReasonAQA 的结果说明，数据分布会直接塑造模型能力。如果数据集中 sound/music 问题多，模型就会更偏 sound/music；如果 speech / ASR / spoken content 数据少，语音内容理解能力就不会自然提升。
+
+因此，后续如果要做“语音理解和推理”，不能只照搬 Mellow 的 sound/audio 数据构造方式，而要额外加入：
+
+- ASR transcript；
+- 说话人意图；
+- 情绪和语调；
+- 语义矛盾；
+- 对话含义；
+- 语音内容的 entailment；
+- 两段语音的内容、情绪、语速或背景差异比较。
+
+### 9.6 复现优先级应放在 Mini-ReasonAQA，而不是完整训练 Mellow
+
+完整训练 Mellow 不是当前最优先目标。更合理的第一步是构造一个小规模的 Mini-ReasonAQA：
+
+1. 选取少量 AudioCaps / Clotho 或自有音频样本；
+2. 为每条样本生成 detailed QA、MCQ QA、entailment QA；
+3. 对部分样本配对生成 comparison QA；
+4. 保存 task_type、reasoning_type、evidence_source 等字段；
+5. 用现有开源音频语言模型做 zero-shot 测试；
+6. 根据不同 reasoning_type 的结果判断哪些能力缺失。
+
+这条路线能较快验证数据构造是否有效，也能为后续 Echo 复现或自建音频推理 benchmark 打基础。
+
+### 9.7 与 Echo 方向的关系
+
+Mellow 更像是“数据驱动的音频推理能力注入”，而 Echo 更强调 audio-interleaved reasoning 的过程结构。两者不是替代关系，而是互补关系：
+
+- Mellow 提供如何构造音频推理训练数据的思路；
+- Echo 提供如何组织推理过程和中间步骤的思路；
+- 后续可以考虑用 Mellow 式数据构造方法，为 Echo 式 interleaved reasoning 提供训练或评估数据。
+
+### 9.8 最终收获
+
+这篇文章给出的核心经验是：音频推理能力不是抽象地“让模型更聪明”，而是要把推理能力拆成具体任务类型，并为每一类能力构造可训练、可评估的数据。模型训练后的提升也不是无差别的，数据覆盖到哪里，能力通常才会提升到哪里。
